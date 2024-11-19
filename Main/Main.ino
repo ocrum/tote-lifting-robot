@@ -20,11 +20,11 @@ class Motor {
     int errorThresh;
 
   public:
-    Motor(int pin, int minSignal = 1050, int maxSignal = 1950, int errorThresh = 0.2) {
+    Motor(int pin, int minSignal = 1050, int maxSignal = 1950, int errorThresh = 0.2f) {
       motorPin = pin;
       signalMin = minSignal;
       signalMax = maxSignal;
-      errorThresh = errorThresh;
+      this->errorThresh = errorThresh;
     }
 
     void attach() {
@@ -81,6 +81,7 @@ class Encoder {
     void setup() {
       pinMode(chA, INPUT);
       pinMode(chB, INPUT);
+      Encoder::instance = this;
       attachInterrupt(digitalPinToInterrupt(chA), readEncoderISR, CHANGE);
     }
 
@@ -145,7 +146,8 @@ class Ultrasonic {
       digitalWrite(trigPin, LOW);
 
       // Read the echo pin and calculate distance
-      long duration = pulseIn(echoPin, HIGH);
+      long duration = pulseIn(echoPin, HIGH, 30000);
+      if (duration == 0) return -1;
       long distance = duration * 0.034 / 2; // Convert duration to distance in cm
 
       DEBUG_PRINT(" Dist: " + String(distance));
@@ -153,11 +155,13 @@ class Ultrasonic {
     }
 
     bool isInPlace() {
-      return getDistance() < inPlaceThreshold;
+      long distance = getDistance();
+      return (distance != -1 && distance < inPlaceThreshold);
     }
 
     bool isClear() {
-      return getDistance() < clearThreshold;
+      long distance = getDistance();
+      return (distance != -1 && distance > clearThreshold);
     }
 
     bool isSustainedInPlace() {
