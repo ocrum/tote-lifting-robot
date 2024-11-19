@@ -37,9 +37,10 @@ class Motor {
       motor.writeMicroseconds(signalOutput);
     }
 
-    void controlMotor(Encoder& encoder, float targetDegrees) {  
+    bool controlMotor(Encoder& encoder, float targetDegrees) {  
       int maxMotorSpeed = 15;
       bool usePID = false;
+      bool ret = false; // if reached target position
 
       float currentPosition = encoder.getDegrees(); // Get current position in degrees
       float error = targetDegrees - currentPosition;
@@ -48,15 +49,19 @@ class Motor {
       float motorSpeed = 0.0;
 
       if (abs(error) > errorThresh) {
+        ret = false;
         if (usePID) {
           motorSpeed = constrain(kp * error, -maxMotorSpeed, maxMotorSpeed);
         } else {
           motorSpeed = (error > 0) ? maxMotorSpeed : -maxMotorSpeed;
         }
+      } else {
+        ret = true;
       }
 
       motor.setPower(motorSpeed);
       DEBUG_PRINTLN(" target: " + String(targetDegrees) + " curr : " + String(currentPosition) + " error: " + String(error) + " speed: " + String(motorSpeed));
+      return ret;
     }
 };
 
@@ -190,6 +195,8 @@ enum SystemState{
   IDLE
 };
 
+
+
 class System {
   private:
     SystemState currState;
@@ -201,11 +208,30 @@ class System {
     float proteusPosition;
     float idlePosition;
     const float angleIncrement;
+    bool inPosition;
 
     Motor motor;
     Encoder encoder;
     Ultrasonic proteusSensor;
     Ultrasonic toteSensor;
+
+    enum SensingState{
+      IN_PLACE,
+      CLEAR,
+      DONT_CARE
+    };
+
+    enum AutoType {
+      LOADING,
+      UNLOADING
+    };
+
+    struct AutoStep {
+      float position;
+      SensingState proteusState;
+      SensingState conveyerState;
+      String description;
+    };
 
   public:
     System() :
@@ -217,6 +243,7 @@ class System {
       conveyerPosition(0),
       proteusPosition(0),
       angleIncrement(5),
+      inPosition(false),
 
       motor(9),
       encoder(2, 3, 2632, 28),
@@ -266,7 +293,7 @@ class System {
       }
 
       // Render state
-      motor.rotateMotorToDegrees(encoder, targetPosition);
+      inPosition = motor.rotateMotorToDegrees(encoder, targetPosition);
     }
 
   private:
@@ -349,37 +376,76 @@ class System {
     }
 
     void autoLoad() {
+        executeAuto(LOADING);
+    }
+
+    void autoUnload() {
+      executeAuto(UNLOADING);
+    }
+
+    void executeAuto(AutoType type) {
+      static int stepIndex = 0; // How is this stored between loop calls
+      static AutoStep* steps = nullptr; // Pointer to the steps array
+      static int totalSteps = 0;
+      static bool operationInitialized = false;
+
       if (userInput == "x") {
         currState = IDLE;
+        stepIndex = 0;
+        operationInitialized = false;
         return;
       }
 
-      // If proteus and convery belt is in place
-      // then move to convery belt position
-      // then move to proteus position
-      // then check if proteus is clear
-      // move back to idle position
+      if (!operationInitialized) {
+        if (type == LOADING) {
+          static AutoStep loadingSteps[] = {
+            // position.        proteus    conveyer.  desciription
+            { idlePosition,     DONT_CARE, DONT_CARE, "Ensure robot is in idle state and things are in place"},
+            { conveyerPosition, IN_PLACE,  IN_PLACE,  "Bring robot to conveyer ensuring things are still in place"},
+            { proteusPosition,  IN_PLACE,  DONT_CARE, "Bring robot to proteus ensuring proteus is still in place"},
+            { proteusPosition,  CLEAR,     DONT_CARE, "Keep robot in place until proteus leaves"},
+            { idlePosition,     DONT_CARE, DONT_CARE, "Bring robot back to idle"},
+          };
+          steps = loadingSteps;
+          totalSteps = sizeof(loadingSteps) / sizeof(loadingSteps[0]);
+        } else if (type = UNLOADING) {
+          static AutoStep unloadingSteps[] = {
+            // position.        proteus    conveyer.  desciription
+            { idlePosition,     DONT_CARE, DONT_CARE, "Ensure robot is in idle state and things are in place/clear"},
+            { proteusPosition,  IN_PLACE,  CLEAR,     "Bring robot to proteus ensuring things are still in place"},
+            { conveyerPosition, DONT_CARE, DONT_CARE, "Bring robot to conveyer insureing conveyer is still clear"},
+            { conveyerPosition, DONT_CARE, CLEAR,     "Keep robot in place until conveyer clear"},
+            { idlePosition,     DONT_CARE, DONT_CARE, "Bring robot back to idle"},
+          };
+          steps = unloadingSteps;
+          totalSteps = sizeof(loadingSteps) / sizeof(loadingSteps[0]);
+        }
+        operationInitialized = true;
+        stepIndex = 0;
+      }
+
+      // TODO this is code that daniel wrote when i can't think
+
+      AutoOperationStep& currentStep = steps[stepIndex];
+
+      targetPosition = currentStep.position;
+
+      // cehck if in position
+      // check if sensors match
+
+      // the idea: each step basically
+      // target that position while things are in place/clear
+      // if things are not inplace/clear then pause
+      // move to next step when all things are in place/clear and at target
+
+
+      // TODO look into dealing with ultrasonic noise (ignore really random jumps in data)
+      // TODO consider looking into recovery behavior (if proteus moves)
 
       // TODO ensure that robot is in idle position before autoLoad?
       // make sure that it isn't loaded with a tote (current measurement)
       // or instead use user input somehow.
     }
-
-    void autoUnload() {
-      if (userInput == "x") {
-        currState = IDLE;
-        return;
-      }
-
-      // If proteus is in place and convery belt is clear
-      // then move to proteus position
-      // then move to convery belt position
-      // then check if conver belt is clear
-      // move back to idle position
-
-      // TODO implement clear distance and in place distance 
-    }
-
 
     void idle() {
       if (userInput.length() > 0) {
