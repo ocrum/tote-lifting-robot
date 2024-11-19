@@ -37,35 +37,26 @@ class Motor {
       motor.writeMicroseconds(signalOutput);
     }
 
-    void rotateMotorToDegrees(Encoder& encoder, float targetDegrees) {  
+    void controlMotor(Encoder& encoder, float targetDegrees) {  
       int maxMotorSpeed = 15;
       bool usePID = false;
 
-      float error = targetDegrees - encoder.getDegrees();
+      float currentPosition = encoder.getDegrees(); // Get current position in degrees
+      float error = targetDegrees - currentPosition;
       float kp = maxMotorSpeed; 
 
-      // TODO consider making this a function that doesn't have an internal loop
-      while (abs(error) > errorThresh) {
-        float currentPosition = encoder.getDegrees(); // Get current position in degrees
-        error = targetDegrees - currentPosition;
+      float motorSpeed = 0.0;
 
-        float motorSpeed = 0
-
+      if (abs(error) > errorThresh) {
         if (usePID) {
-          float motorSpeed = min(maxMotorSpeed, max(-maxMotorSpeed, kp * error));
+          motorSpeed = constrain(kp * error, -maxMotorSpeed, maxMotorSpeed);
         } else {
-          if (erorr > 0) {
-            motorSpeed = maxMotorSpeed;
-          } else {
-            motorSpeed = -maxMotorSpeed;
-          }
+          motorSpeed = (error > 0) ? maxMotorSpeed : -maxMotorSpeed;
         }
-
-        motor.setPower(motorSpeed);
-        DEBUG_PRINTLN(" target: " + String(targetDegrees) + " curr : " + String(currentPosition) + " error: " + String(error) + " speed: " + String(motorSpeed));
-        delay(50); 
       }
-      motor.setPower(0); // Stop the motor
+
+      motor.setPower(motorSpeed);
+      DEBUG_PRINTLN(" target: " + String(targetDegrees) + " curr : " + String(currentPosition) + " error: " + String(error) + " speed: " + String(motorSpeed));
     }
 };
 
@@ -121,20 +112,23 @@ class Ultrasonic {
   private:
     int trigPin;
     int echoPin;
-    int distanceThreshold;
-    unsigned long startTime;
+    int inPlaceThreshold; // The maximum continous distance to cosndier the object to be in place
+    int clearThreshold;   // The minimum continous distance to consider the space to be clear
+    unsigned long startInPlaceTime;
+    unsigned long startClearTime;
     unsigned long timeThreshold;
 
   public:
-    Ultrasonic(int trig, int echo, int dThresh = 20, int tThresh = 5000) {
-      trigPin = trig;
-      echoPin = echo;
-      distanceThreshold = dThresh;
+    Ultrasonic(int trig, int echo, int inPlaceThreshold, int clearThreshold, int tThresh = 5000)
+      : trigPin(trig),
+        echoPin(echo),
+        inPlaceThreshold(inPlaceThreshold),
+        clearThreshold(clearThreshold),
+        startInPlaceTime(0),
+        startClearTime(0),
+        timeThreshold(tThresh) {
       pinMode(trigPin, OUTPUT);
       pinMode(echoPin, INPUT);
-
-      startTime = 0;
-      timeThreshold = tThresh;
     }
 
     long getDistance() {
@@ -153,19 +147,36 @@ class Ultrasonic {
       return distance;
     }
 
-    bool isObjectDetected() {
-      return getDistance() < distanceThreshold;
+    bool isInPlace() {
+      return getDistance() < inPlaceThreshold;
     }
 
-    bool isSustainedDetection() {
-      if (isObjectDetected()) {
-        if (startTime == 0) {
-          startTime = millis();
-        } else if (millis() - startTime > timeThreshold) {
+    bool isClear() {
+      return getDistance() < clearThreshold;
+    }
+
+    bool isSustainedInPlace() {
+      if (isInPlace()) {
+        if (startInPlaceTime == 0) {
+          startInPlaceTime = millis();
+        } else if (millis() - startInPlaceTime > timeThreshold) {
           return true;
         }
       } else {
-        startTime = 0;
+        startInPlaceTime = 0;
+      }
+      return false;
+    }
+
+    bool isSustainedClear() {
+      if (isClear()) {
+        if (startClearTime == 0) {
+          startClearTime = millis();
+        } else if (millis() - startClearTime > timeThreshold) {
+          return true;
+        }
+      } else {
+        startClearTime = 0;
       }
       return false;
     }
@@ -182,8 +193,14 @@ enum SystemState{
 class System {
   private:
     SystemState currState;
+    SystemState prevState;
     String userInput;
+
     float targetPosition; // Angle 
+    float conveyerPosition;
+    float proteusPosition;
+    float idlePosition;
+    const float angleIncrement;
 
     Motor motor;
     Encoder encoder;
@@ -191,30 +208,47 @@ class System {
     Ultrasonic toteSensor;
 
   public:
-    System()
-      : currentState(IDLE),
-        motor(9),
-        encoder(2, 3, 2632, 28),
-        proteusSensor(6, 7),
-        toteSensor(4, 5)
-        userInput("")
-        targetPosition(0) {}
+    System() :
+      currState(IDLE),
+      prevState(IDLE),
+      userInput(""),
+
+      targetPosition(0),
+      conveyerPosition(0),
+      proteusPosition(0),
+      angleIncrement(5),
+
+      motor(9),
+      encoder(2, 3, 2632, 28),
+      proteusSensor(6, 7, 10, 50), // TODO calibrate thresholds
+      toteSensor(4, 5, 10, 50),
+    {}
 
     void setup() {
       motor.attach();
       encoder.setup();
       Encoder::instance = &encoder; // Assign the instance for ISR access
+
+      displayInstructions();
     }
 
     void run() {
+      if (currState != prevState) {
+        displayInstructions();
+        prevState = currState;
+      }
+
       // Get input
       if (Serial.available() > 0) {
         userInput = Serial.readStringUntil('\n');
+        userInput.trim();
+      } else {
+        userInput = "";
       }
 
       // Handle input and update state
-      switch (currentState) {
-        case CALIBRATION:
+      switch (currState) {
+      case CALIBRATION:
           calibrate();
           break;
         case MANUAL_CONTROL:
@@ -236,45 +270,132 @@ class System {
     }
 
   private:
+    void displayInstructions() {
+      Serial.println("Current State: " + getStateName());
+
+      String instructions;
+
+      switch (currState) {
+        case CALIBRATION:
+          instructions = "'x': exit calibration | 'd': move forward | 'a': move backward | 'c': set conveyor position | 'p': set Proteus position";
+          break;
+        case MANUAL_CONTROL:
+          instructions = "'x': exit manual control | 'd': move forward | 'a': move backward";
+          break;
+        case AUTO_LOADING:
+          instructions = "'x': exit auto load Proteus";
+          break;
+        case AUTO_UNLOADING:
+          instructions = "'x': exit auto unload Proteus";
+          break;
+        case IDLE:
+          instructions = "'c': calibrate | 'm': manual control | 'l': auto load Proteus | 'u': auto unload Proteus";
+          break;
+        default:
+          instructions = "No instructions available.";
+          break;
+      }
+
+      Serial.println(instructions);
+      Serial.print("> ");
+    }
+
     String getStateName() const {
-      switch (currentState) {
-        case CALIBRATION: return "Calibration";
+      switch (currState) {
+        case CALIBRATION:    return "Calibration";
         case MANUAL_CONTROL: return "Manual";
-        case AUTO_LOADING: return "Load Proteus";
+        case AUTO_LOADING:   return "Load Proteus";
         case AUTO_UNLOADING: return "Unload Proteus";
-        case IDLE: return "IDLE";
-        default: return "UNKNOWN";
+        case IDLE:           return "Idle";
+        default:             return "Unknown";
       }
     }
 
     void calibrate() {
-      Serial.print("'D': move forward 'A': move backward 'C': set conveyer position 'P': set Proteus position")
-
-      swithch (userInput) {
-        case "A":
-        case "D":
-        case "C":
-        case "P":
+      if (userInput.length() > 0) {
+        if (userInput == "d") {
+          targetPosition += angleIncrement;
+        } else if (userInput == "a") {
+          targetPosition -= angleIncrement;
+        } else if (userInput == "c") {
+          conveyerPosition = targetPosition;
+          idlePosition = (conveyerPosition + proteusPosition)/2;
+          Serial.println("Conveyor position set to " + String(conveyerPosition));
+        } else if (userInput == "p") {
+          proteusPosition = targetPosition;
+          idlePosition = (conveyerPosition + proteusPosition)/2;
+          Serial.println("Proteus position set to " + String(proteusPosition));
+        } else if (userInput == "x") {
+          currState = IDLE;
+        } else {
+          Serial.println("Invalid input. Please try again.");
+        }
       }
+
     }
 
     void manualControl() {
-
+      if (userInput.length() > 0) {
+        if (userInput == "d") {
+          targetPosition += angleIncrement;
+        } else if (userInput == "a") {
+          targetPosition -= angleIncrement;
+        } else if (userInput == "x") {
+          currState = IDLE;
+        } else {
+          Serial.println("Invalid input. Please try again.");
+        }
+      }
     }
 
     void autoLoad() {
+      if (userInput == "x") {
+        currState = IDLE;
+        return;
+      }
 
+      // If proteus and convery belt is in place
+      // then move to convery belt position
+      // then move to proteus position
+      // then check if proteus is clear
+      // move back to idle position
+
+      // TODO ensure that robot is in idle position before autoLoad?
+      // make sure that it isn't loaded with a tote (current measurement)
+      // or instead use user input somehow.
     }
 
     void autoUnload() {
+      if (userInput == "x") {
+        currState = IDLE;
+        return;
+      }
 
+      // If proteus is in place and convery belt is clear
+      // then move to proteus position
+      // then move to convery belt position
+      // then check if conver belt is clear
+      // move back to idle position
+
+      // TODO implement clear distance and in place distance 
     }
+
 
     void idle() {
-      
-    }
-
-    
+      if (userInput.length() > 0) {
+        if (userInput == "c") {
+          currState = CALIBRATION;
+        } else if (userInput == "m") {
+          currState = MANUAL_CONTROL;
+        } else if (userInput == "l") {
+          currState = AUTO_LOADING;
+        } else if (userInput == "u") {
+          currState = AUTO_UNLOADING;
+        } else {
+          Serial.println("Invalid input. Please try again.");
+        }
+      }
+    }  
 }
 
 System system;
