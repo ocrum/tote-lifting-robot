@@ -11,60 +11,6 @@
   #define DEBUG_PRINTLN(x)
 #endif
 
-class Motor {
-  private:
-    Servo motor;
-    int motorPin;
-    int signalMin;
-    int signalMax;
-    int errorThresh;
-
-  public:
-    Motor(int pin, int minSignal = 1050, int maxSignal = 1950, int errorThresh = 0.2f) {
-      motorPin = pin;
-      signalMin = minSignal;
-      signalMax = maxSignal;
-      this->errorThresh = errorThresh;
-    }
-
-    void attach() {
-      motor.attach(motorPin);
-    }
-
-    void setPower(int power) {
-      power = constrain(power, -100, 100);
-      int signalOutput = map(power, -100, 100, signalMin, signalMax);
-      motor.writeMicroseconds(signalOutput);
-    }
-
-    bool controlMotor(Encoder& encoder, float targetDegrees) {  
-      int maxMotorSpeed = 15;
-      bool usePID = false;
-      bool ret = false; // if reached target position
-
-      float currentPosition = encoder.getDegrees(); // Get current position in degrees
-      float error = targetDegrees - currentPosition;
-      float kp = maxMotorSpeed; 
-
-      float motorSpeed = 0.0;
-
-      if (abs(error) > errorThresh) {
-        ret = false;
-        if (usePID) {
-          motorSpeed = constrain(kp * error, -maxMotorSpeed, maxMotorSpeed);
-        } else {
-          motorSpeed = (error > 0) ? maxMotorSpeed : -maxMotorSpeed;
-        }
-      } else {
-        ret = true;
-      }
-
-      motor.setPower(motorSpeed);
-      DEBUG_PRINTLN(" target: " + String(targetDegrees) + " curr : " + String(currentPosition) + " error: " + String(error) + " speed: " + String(motorSpeed));
-      return ret;
-    }
-};
-
 class Encoder {
   private:
     int chA;
@@ -109,6 +55,88 @@ class Encoder {
           instance->ticks--; // Counterclockwise
         }
       }
+    }
+};
+
+class Motor {
+  private:
+    Servo motor;
+    int dirPin1;
+    int dirPin2;
+    int pwmPin;
+    int signalMin;
+    int signalMax;
+    int errorThresh;
+
+  public:
+    Motor(int dirPin1, int dirPin2, int pwmPin, int minSignal = 1050, int maxSignal = 1950, int errorThresh = 0.2f) {
+      this->dirPin1 = dirPin1;
+      this->dirPin2 = dirPin2;
+      this->pwmPin = pwmPin;
+      signalMin = minSignal;
+      signalMax = maxSignal;
+      this->errorThresh = errorThresh;
+    }
+
+    void attach() {
+      pinMode(dirPin1, OUTPUT);
+      pinMode(dirPin2, OUTPUT);
+      pinMode(pwmPin, OUTPUT);
+    }
+
+    void setPower(int power) {
+      // Constrain power to range -100 to 100
+      power = constrain(power, -100, 100);
+
+      if (power > 0) {
+        // Forward direction
+        digitalWrite(dirPin1, HIGH);
+        digitalWrite(dirPin2, LOW);
+        analogWrite(pwmPin, map(power, 0, 100, 0, 255)); // Scale 0-100 to 0-255
+      } else if (power < 0) {
+        // Reverse direction
+        digitalWrite(dirPin1, LOW);
+        digitalWrite(dirPin2, HIGH);
+        analogWrite(pwmPin, map(-power, 0, 100, 0, 255)); // Scale 0-100 to 0-255
+      } else {
+        // Stop the motor
+        digitalWrite(dirPin1, LOW);
+        digitalWrite(dirPin2, LOW);
+        analogWrite(pwmPin, 0);
+      }
+    }
+
+    bool controlMotor(Encoder& encoder, float targetDegrees) {  
+      int maxMotorSpeed = 15;
+      bool usePID = false;
+      bool ret = false; // if reached target position
+
+      float currentPosition = encoder.getDegrees(); // Get current position in degrees
+      float error = targetDegrees - currentPosition;
+      float kp = maxMotorSpeed; 
+
+      float motorSpeed = 0.0;
+
+      if (abs(error) > errorThresh) {
+        ret = false;
+        if (usePID) {
+          motorSpeed = constrain(kp * error, -maxMotorSpeed, maxMotorSpeed);
+        } else {
+          motorSpeed = (error > 0) ? maxMotorSpeed : -maxMotorSpeed;
+        }
+      } else {
+        ret = true;
+      }
+
+      setPower(motorSpeed);
+      DEBUG_PRINTLN(" target: " + String(targetDegrees) + " curr : " + String(currentPosition) + " error: " + String(error) + " speed: " + String(motorSpeed));
+      return ret;
+    }
+
+    bool inPosition(Encoder& encoder, float targetDegrees) {
+      float currentPosition = encoder.getDegrees(); // Get current position in degrees
+      float error = targetDegrees - currentPosition;
+      return (abs(error) <= errorThresh);
     }
 };
 
@@ -201,14 +229,14 @@ enum SystemState{
 
 
 
-class System {
+class RobotSystem {
   private:
     SystemState currState;
     SystemState prevState;
     String userInput;
 
     float targetPosition; // Angle 
-    float conveyerPosition;
+    float conveyorPosition;
     float proteusPosition;
     float idlePosition;
     const float angleIncrement;
@@ -233,26 +261,26 @@ class System {
     struct AutoStep {
       float position;
       SensingState proteusState;
-      SensingState conveyerState;
+      SensingState conveyorState;
       String description;
     };
 
   public:
-    System() :
+    RobotSystem() :
       currState(IDLE),
       prevState(IDLE),
       userInput(""),
 
       targetPosition(0),
-      conveyerPosition(0),
+      conveyorPosition(0),
       proteusPosition(0),
       angleIncrement(5),
       inPosition(false),
 
-      motor(9),
+      motor(2, 3, 9),
       encoder(2, 3, 2632, 28),
       proteusSensor(6, 7, 10, 50), // TODO calibrate thresholds
-      toteSensor(4, 5, 10, 50),
+      toteSensor(4, 5, 10, 50)
     {}
 
     void setup() {
@@ -297,7 +325,7 @@ class System {
       }
 
       // Render state
-      inPosition = motor.rotateMotorToDegrees(encoder, targetPosition);
+      motor.controlMotor(encoder, targetPosition);
     }
 
   private:
@@ -349,12 +377,12 @@ class System {
         } else if (userInput == "a") {
           targetPosition -= angleIncrement;
         } else if (userInput == "c") {
-          conveyerPosition = targetPosition;
-          idlePosition = (conveyerPosition + proteusPosition)/2;
-          Serial.println("Conveyor position set to " + String(conveyerPosition));
+          conveyorPosition = targetPosition;
+          idlePosition = (conveyorPosition + proteusPosition)/2;
+          Serial.println("Conveyor position set to " + String(conveyorPosition));
         } else if (userInput == "p") {
           proteusPosition = targetPosition;
-          idlePosition = (conveyerPosition + proteusPosition)/2;
+          idlePosition = (conveyorPosition + proteusPosition)/2;
           Serial.println("Proteus position set to " + String(proteusPosition));
         } else if (userInput == "x") {
           currState = IDLE;
@@ -403,9 +431,9 @@ class System {
       if (!operationInitialized) {
         if (type == LOADING) {
           static AutoStep loadingSteps[] = {
-            // position.        proteus    conveyer.  desciription
+            // position.        proteus    conveyor.  desciription
             { idlePosition,     DONT_CARE, DONT_CARE, "Ensure robot is in idle state and things are in place"},
-            { conveyerPosition, IN_PLACE,  IN_PLACE,  "Bring robot to conveyer ensuring things are still in place"},
+            { conveyorPosition, IN_PLACE,  IN_PLACE,  "Bring robot to conveyor ensuring things are still in place"},
             { proteusPosition,  IN_PLACE,  DONT_CARE, "Bring robot to proteus ensuring proteus is still in place"},
             { proteusPosition,  CLEAR,     DONT_CARE, "Keep robot in place until proteus leaves"},
             { idlePosition,     DONT_CARE, DONT_CARE, "Bring robot back to idle"},
@@ -414,41 +442,35 @@ class System {
           totalSteps = sizeof(loadingSteps) / sizeof(loadingSteps[0]);
         } else if (type = UNLOADING) {
           static AutoStep unloadingSteps[] = {
-            // position.        proteus    conveyer.  desciription
+            // position.        proteus    conveyor.  desciription
             { idlePosition,     DONT_CARE, DONT_CARE, "Ensure robot is in idle state and things are in place/clear"},
             { proteusPosition,  IN_PLACE,  CLEAR,     "Bring robot to proteus ensuring things are still in place"},
-            { conveyerPosition, DONT_CARE, DONT_CARE, "Bring robot to conveyer insureing conveyer is still clear"},
-            { conveyerPosition, DONT_CARE, CLEAR,     "Keep robot in place until conveyer clear"},
+            { conveyorPosition, DONT_CARE, DONT_CARE, "Bring robot to conveyor insureing conveyor is still clear"},
+            { conveyorPosition, DONT_CARE, CLEAR,     "Keep robot in place until conveyor clear"},
             { idlePosition,     DONT_CARE, DONT_CARE, "Bring robot back to idle"},
           };
           steps = unloadingSteps;
-          totalSteps = sizeof(loadingSteps) / sizeof(loadingSteps[0]);
+          totalSteps = sizeof(unloadingSteps) / sizeof(unloadingSteps[0]);
         }
         operationInitialized = true;
         stepIndex = 0;
       }
 
-      // TODO this is code that daniel wrote when i can't think
-
-      AutoOperationStep& currentStep = steps[stepIndex];
+      AutoStep& currentStep = steps[stepIndex];
 
       targetPosition = currentStep.position;
 
-      // cehck if in position
-      // check if sensors match
+      bool proteusSensorMatch = ((currentStep.proteusState != DONT_CARE) || 
+                                 (currentStep.proteusState == CLEAR && proteusSensor.isClear()) ||
+                                 (currentStep.proteusState == IN_PLACE && proteusSensor.isInPlace()));
 
-      // the idea: each step basically
-      // target that position while things are in place/clear
-      // if things are not inplace/clear then pause
-      // move to next step when all things are in place/clear and at target
+      bool conveyorSensorMatch = ((currentStep.conveyorState != DONT_CARE) || 
+                                  (currentStep.conveyorState == CLEAR && toteSensor.isClear()) ||
+                                  (currentStep.conveyorState == IN_PLACE && toteSensor.isInPlace()));
 
-
-      // TODO look into dealing with ultrasonic noise (ignore really random jumps in data)
-      // TODO consider looking into recovery behavior (if proteus moves)
-
-      // TODO ensure that robot is in idle position before autoLoad?
-      // make sure that it isn't loaded with a tote (current measurement)
-      // or instead use user input somehow.
+      if (motor.inPosition(encoder, targetPosition) && proteusSensorMatch && conveyorSensorMatch) {
+        stepIndex = (stepIndex + 1) % totalSteps;
+      }
     }
 
     void idle() {
@@ -466,16 +488,16 @@ class System {
         }
       }
     }  
-}
+};
 
-System system;
+RobotSystem robotSystem;
 
 void setup() {
   Serial.begin(9600);
-  system.setup();
+  robotSystem.setup();
 }
 
 void loop() {
-  system.run();
+  robotSystem.run();
   delay(1000);
 }
