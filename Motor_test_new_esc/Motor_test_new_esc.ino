@@ -1,7 +1,7 @@
 // Define control pins
-int DirPin1 = 2;  // Direction pin 1
-int DirPin2 = 3;  // Direction pin 2
-int PWMPin = 9;   // PWM pin
+int DirPin1 = 12;  // Direction pin 1
+int DirPin2 = 13;  // Direction pin 2
+int PWMPin = 11;   // PWM pin
 
 void setup() {
   pinMode(DirPin1, OUTPUT);

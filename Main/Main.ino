@@ -1,16 +1,5 @@
 #include <Servo.h>
 
-// Uncomment the line below to enable debugging
-#define DEBUG
-
-#ifdef DEBUG
-  #define DEBUG_PRINT(x) Serial.print(x)
-  #define DEBUG_PRINTLN(x) Serial.println(x)
-#else
-  #define DEBUG_PRINT(x)
-  #define DEBUG_PRINTLN(x)
-#endif
-
 class Encoder {
   private:
     int chA;
@@ -66,10 +55,10 @@ class Motor {
     int pwmPin;
     int signalMin;
     int signalMax;
-    int errorThresh;
+    float errorThresh;
 
   public:
-    Motor(int dirPin1, int dirPin2, int pwmPin, int minSignal = 1050, int maxSignal = 1950, int errorThresh = 0.2f) {
+    Motor(int dirPin1, int dirPin2, int pwmPin, int minSignal = 1050, int maxSignal = 1950, float errorThresh = 0.2f) {
       this->dirPin1 = dirPin1;
       this->dirPin2 = dirPin2;
       this->pwmPin = pwmPin;
@@ -125,11 +114,16 @@ class Motor {
           motorSpeed = (error > 0) ? maxMotorSpeed : -maxMotorSpeed;
         }
       } else {
+        motorSpeed = 0;
         ret = true;
       }
 
       setPower(motorSpeed);
-      DEBUG_PRINTLN(" target: " + String(targetDegrees) + " curr : " + String(currentPosition) + " error: " + String(error) + " speed: " + String(motorSpeed));
+      // Serial.println(" target: "   + String(targetDegrees) +
+      //                " curr : "    + String(currentPosition) +
+      //                " error: "    + String(error) +
+      //                " e thresh: " + String(errorThresh) +
+      //                " speed: "    + String(motorSpeed));
       return ret;
     }
 
@@ -178,7 +172,7 @@ class Ultrasonic {
       if (duration == 0) return -1;
       long distance = duration * 0.034 / 2; // Convert duration to distance in cm
 
-      DEBUG_PRINT(" Dist: " + String(distance));
+      // Serial.print(" Dist: " + String(distance));
       return distance;
     }
 
@@ -227,8 +221,6 @@ enum SystemState{
   IDLE
 };
 
-
-
 class RobotSystem {
   private:
     SystemState currState;
@@ -241,6 +233,7 @@ class RobotSystem {
     float idlePosition;
     const float angleIncrement;
     bool inPosition;
+    bool isRunning;
 
     Motor motor;
     Encoder encoder;
@@ -272,12 +265,13 @@ class RobotSystem {
       userInput(""),
 
       targetPosition(0),
-      conveyorPosition(0),
-      proteusPosition(0),
+      conveyorPosition(-20),
+      proteusPosition(20),
       angleIncrement(5),
       inPosition(false),
+      isRunning(false),
 
-      motor(2, 3, 9),
+      motor(12, 13, 11),
       encoder(2, 3, 2632, 28),
       proteusSensor(6, 7, 10, 50), // TODO calibrate thresholds
       toteSensor(4, 5, 10, 50)
@@ -289,6 +283,22 @@ class RobotSystem {
       Encoder::instance = &encoder; // Assign the instance for ISR access
 
       displayInstructions();
+    }
+
+    void testUltrasonics() {
+      long p_dist = proteusSensor.getDistance();
+      long t_dist = toteSensor.getDistance();
+      Serial.print(" Proteus Sensor Distance: " + String(p_dist) + "cm");
+      Serial.print(" Tote Sensor Distance: " + String(t_dist) + "cm");
+      Serial.println();
+    }
+
+    void testEncoder() {
+      Serial.println("Encoder Ticks: " + String(encoder.getTicks()));
+    }
+
+    void testMotor(int power) {
+      motor.setPower(power);
     }
 
     void run() {
@@ -325,7 +335,11 @@ class RobotSystem {
       }
 
       // Render state
-      motor.controlMotor(encoder, targetPosition);
+      if (isRunning) {
+        motor.controlMotor(encoder, targetPosition);
+      } else {
+        motor.setPower(0);
+      }
     }
 
   private:
@@ -371,6 +385,7 @@ class RobotSystem {
     }
 
     void calibrate() {
+      isRunning = true;
       if (userInput.length() > 0) {
         if (userInput == "d") {
           targetPosition += angleIncrement;
@@ -394,6 +409,7 @@ class RobotSystem {
     }
 
     void manualControl() {
+      isRunning = true;
       if (userInput.length() > 0) {
         if (userInput == "d") {
           targetPosition += angleIncrement;
@@ -408,14 +424,17 @@ class RobotSystem {
     }
 
     void autoLoad() {
+        isRunning = true;
         executeAuto(LOADING);
     }
 
     void autoUnload() {
+      isRunning = true;
       executeAuto(UNLOADING);
     }
 
     void executeAuto(AutoType type) {
+      // Serial.println("HERE");
       static int stepIndex = 0; // How is this stored between loop calls
       static AutoStep* steps = nullptr; // Pointer to the steps array
       static int totalSteps = 0;
@@ -425,6 +444,7 @@ class RobotSystem {
         currState = IDLE;
         stepIndex = 0;
         operationInitialized = false;
+        targetPosition = idlePosition;
         return;
       }
 
@@ -459,21 +479,56 @@ class RobotSystem {
       AutoStep& currentStep = steps[stepIndex];
 
       targetPosition = currentStep.position;
+      bool isInPosition = motor.inPosition(encoder, targetPosition);
 
-      bool proteusSensorMatch = ((currentStep.proteusState != DONT_CARE) || 
+      bool proteusSensorMatch = ((currentStep.proteusState == DONT_CARE) || 
                                  (currentStep.proteusState == CLEAR && proteusSensor.isClear()) ||
                                  (currentStep.proteusState == IN_PLACE && proteusSensor.isInPlace()));
 
-      bool conveyorSensorMatch = ((currentStep.conveyorState != DONT_CARE) || 
+      bool conveyorSensorMatch = ((currentStep.conveyorState == DONT_CARE) || 
                                   (currentStep.conveyorState == CLEAR && toteSensor.isClear()) ||
                                   (currentStep.conveyorState == IN_PLACE && toteSensor.isInPlace()));
 
-      if (motor.inPosition(encoder, targetPosition) && proteusSensorMatch && conveyorSensorMatch) {
+      Serial.print("step: ");
+      Serial.print(stepIndex);
+
+      // Serial.print(" step: ");
+      // Serial.print(totalSteps);
+
+      Serial.print(" targPos: ");
+      Serial.print(targetPosition);
+
+      Serial.print(" inPos: ");
+      Serial.print(isInPosition);
+
+      Serial.print(" pMatch: ");
+      Serial.print(proteusSensorMatch);
+
+      Serial.print(" tMatch: ");
+      Serial.print(conveyorSensorMatch);
+
+      Serial.print(" currPState: ");
+      Serial.print(currentStep.proteusState);
+
+      Serial.print(" currTState: ");
+      Serial.print(currentStep.conveyorState);
+
+      // Serial.print(" curr description: ");
+      // Serial.print(currentStep.description);
+
+      Serial.println();
+
+      if (isInPosition && proteusSensorMatch && conveyorSensorMatch) {
         stepIndex = (stepIndex + 1) % totalSteps;
+      } else {
+        if (!proteusSensorMatch || !conveyorSensorMatch) {
+          isRunning = false;
+        }
       }
     }
 
     void idle() {
+      isRunning = false;
       if (userInput.length() > 0) {
         if (userInput == "c") {
           currState = CALIBRATION;
@@ -498,6 +553,9 @@ void setup() {
 }
 
 void loop() {
+  // robotSystem.testUltrasonics();
+  // robotSystem.testEncoder();
+  // robotSystem.testMotor(0);
   robotSystem.run();
-  delay(1000);
+  delay(100);
 }
