@@ -95,14 +95,14 @@ class Motor {
       }
     }
 
-    bool controlMotor(Encoder& encoder, float targetDegrees) {  
-      int maxMotorSpeed = 15;
-      bool usePID = false;
+    bool controlMotor(Encoder& encoder, float targetDegrees, float mSpeed) {  
+      int maxMotorSpeed = mSpeed;
+      bool usePID = true;
       bool ret = false; // if reached target position
 
       float currentPosition = encoder.getDegrees(); // Get current position in degrees
       float error = targetDegrees - currentPosition;
-      float kp = maxMotorSpeed; 
+      float kp = 20.0; 
 
       float motorSpeed = 0.0;
 
@@ -231,6 +231,7 @@ class RobotSystem {
     float conveyorPosition;
     float proteusPosition;
     float idlePosition;
+    float motorSpeed;
     const float angleIncrement;
     bool inPosition;
     bool isRunning;
@@ -265,16 +266,17 @@ class RobotSystem {
       userInput(""),
 
       targetPosition(0),
-      conveyorPosition(-20),
-      proteusPosition(20),
+      conveyorPosition(75),
+      proteusPosition(-75),
+      motorSpeed(10),
       angleIncrement(5),
       inPosition(false),
       isRunning(false),
 
       motor(12, 13, 11),
       encoder(2, 3, 2632, 28),
-      proteusSensor(6, 7, 10, 50), // TODO calibrate thresholds
-      toteSensor(4, 5, 10, 50)
+      proteusSensor(6, 7, 7, 65), // TODO calibrate thresholds
+      toteSensor(4, 5, 8, 40)
     {}
 
     void setup() {
@@ -336,7 +338,7 @@ class RobotSystem {
 
       // Render state
       if (isRunning) {
-        motor.controlMotor(encoder, targetPosition);
+        motor.controlMotor(encoder, targetPosition, motorSpeed);
       } else {
         motor.setPower(0);
       }
@@ -350,16 +352,16 @@ class RobotSystem {
 
       switch (currState) {
         case CALIBRATION:
-          instructions = "'x': exit calibration | 'd': move forward | 'a': move backward | 'c': set conveyor position | 'p': set Proteus position";
+          instructions = "'x': exit calibration | 'd': move forward | 'a': move backward | 'c': set conveyor position | 'p': set Proteus position | 'w' increase speed | 's' decrease speed";
           break;
         case MANUAL_CONTROL:
-          instructions = "'x': exit manual control | 'd': move forward | 'a': move backward";
+          instructions = "'x': exit manual control | 'd': move forward | 'a': move backward | 'w' increase speed | 's' decrease speed";
           break;
         case AUTO_LOADING:
-          instructions = "'x': exit auto load Proteus";
+          instructions = "'x': exit auto load Proteus | 'w' increase speed | 's' decrease speed";
           break;
         case AUTO_UNLOADING:
-          instructions = "'x': exit auto unload Proteus";
+          instructions = "'x': exit auto unload Proteus | 'w' increase speed | 's' decrease speed";
           break;
         case IDLE:
           instructions = "'c': calibrate | 'm': manual control | 'l': auto load Proteus | 'u': auto unload Proteus";
@@ -394,11 +396,21 @@ class RobotSystem {
         } else if (userInput == "c") {
           conveyorPosition = targetPosition;
           idlePosition = (conveyorPosition + proteusPosition)/2;
-          Serial.println("Conveyor position set to " + String(conveyorPosition));
+          Serial.print("Conveyor position set to ");
+          Serial.println(conveyorPosition);
         } else if (userInput == "p") {
           proteusPosition = targetPosition;
           idlePosition = (conveyorPosition + proteusPosition)/2;
-          Serial.println("Proteus position set to " + String(proteusPosition));
+          Serial.print("Proteus position set to ");
+          Serial.println(proteusPosition);
+        } else if (userInput == "w") { 
+          motorSpeed = min(motorSpeed + 5, 100);
+          Serial.print("Speed set to ");
+          Serial.println(motorSpeed);
+        } else if (userInput == "s") { 
+          motorSpeed = max(motorSpeed - 5, 0);
+          Serial.print("Speed set to ");
+          Serial.println(motorSpeed);
         } else if (userInput == "x") {
           currState = IDLE;
         } else {
@@ -415,6 +427,14 @@ class RobotSystem {
           targetPosition += angleIncrement;
         } else if (userInput == "a") {
           targetPosition -= angleIncrement;
+        } else if (userInput == "w") { 
+          motorSpeed = min(motorSpeed + 5, 100);
+          Serial.print("Speed set to ");
+          Serial.println(motorSpeed);
+        } else if (userInput == "s") { 
+          motorSpeed = max(motorSpeed - 5, 0);
+          Serial.print("Speed set to ");
+          Serial.println(motorSpeed);
         } else if (userInput == "x") {
           currState = IDLE;
         } else {
@@ -446,7 +466,15 @@ class RobotSystem {
         operationInitialized = false;
         targetPosition = idlePosition;
         return;
-      }
+      } else if (userInput == "w") { 
+          motorSpeed = min(motorSpeed + 5, 100);
+          Serial.print("Speed set to ");
+          Serial.println(motorSpeed);
+        } else if (userInput == "s") { 
+          motorSpeed = max(motorSpeed - 5, 0);
+          Serial.print("Speed set to ");
+          Serial.println(motorSpeed);
+      } 
 
       if (!operationInitialized) {
         if (type == LOADING) {
@@ -555,7 +583,7 @@ void setup() {
 void loop() {
   // robotSystem.testUltrasonics();
   // robotSystem.testEncoder();
-  // robotSystem.testMotor(0);
+  // robotSystem.testMotor(10);
   robotSystem.run();
   delay(100);
 }
